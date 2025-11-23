@@ -1,0 +1,4 @@
+python-telegram-bot
+typer[all]
+python-dotenv
+rich
