@@ -17,9 +17,14 @@
     cd TelePort
     ```
 
-2.  **Install dependencies:**
+2.  **Install the tool:**
+    This will install dependencies and register the `teleport` command globally (or in your virtual environment).
     ```bash
-    pip install -r requirements.txt
+    pip install .
+    ```
+    *For development (editable mode):*
+    ```bash
+    pip install -e .
     ```
 
 3.  **Configure credentials:**
@@ -31,39 +36,26 @@
 
 ## Usage
 
-You can run the tool directly using Python or the provided wrapper script.
-
-### Using the Wrapper Script
-
-Make the script executable (first time only):
-```bash
-chmod +x bin/teleport
-```
+Once installed, you can use the `teleport` command from anywhere in your terminal.
 
 **Send a message:**
 ```bash
-./bin/teleport send-text "Hello from TelePort!"
+teleport send-text "Hello from TelePort!"
 ```
 
 **Send an image:**
 ```bash
-./bin/teleport send-image path/to/image.jpg --caption "Cool photo"
+teleport send-image path/to/image.jpg --caption "Cool photo"
 ```
 
 **Send a file:**
 ```bash
-./bin/teleport send-file path/to/document.pdf
+teleport send-file path/to/document.pdf
 ```
 
 **Listen for messages:**
 ```bash
-./bin/teleport listen
-```
-
-### Using Python Directly
-
-```bash
-python src/telegram_tool.py send-text "Hello World"
+teleport listen
 ```
 
 ## License
