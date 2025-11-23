@@ -36,7 +36,7 @@ teleport config
 
 This will prompt you for:
 - `TELEGRAM_BOT_TOKEN`: Your bot token from @BotFather
-- `TELEGRAM_CHAT_ID`: The chat ID where messages will be sent
+- `TELEGRAM_CHAT_ID`: The chat ID where messages will be sent. You can obtain your Chat ID by messaging @userinfobot on Telegram.
 
 Alternatively, you can manually create `~/.teleport.env`:
 ```
