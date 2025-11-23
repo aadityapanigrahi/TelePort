@@ -29,14 +29,20 @@ pip install -e .
 
 ## Configuration
 
-Create a `.env` file with your Telegram credentials:
+Run the configuration wizard:
 ```bash
-cp .env.example .env
+teleport config
 ```
 
-Edit `.env` and add:
-- `TELEGRAM_BOT_TOKEN`: Your bot token from BotFather
+This will prompt you for:
+- `TELEGRAM_BOT_TOKEN`: Your bot token from @BotFather
 - `TELEGRAM_CHAT_ID`: The chat ID where messages will be sent
+
+Alternatively, you can manually create `~/.teleport.env`:
+```
+TELEGRAM_BOT_TOKEN=your_token_here
+TELEGRAM_CHAT_ID=your_chat_id_here
+```
 
 ## Usage
 

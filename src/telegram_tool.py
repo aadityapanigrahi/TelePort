@@ -166,5 +166,30 @@ def listen(output_dir: str = typer.Option("transaction_files", help="Directory t
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+@app.command()
+def config():
+    """Configure TelePort with your Telegram credentials."""
+    console.print("[bold blue]TelePort Configuration[/bold blue]\n")
+    
+    # Get bot token
+    console.print("Enter your Telegram Bot Token (from @BotFather):")
+    bot_token = input().strip()
+    
+    # Get chat ID
+    console.print("\nEnter your Chat ID:")
+    chat_id = input().strip()
+    
+    # Determine config file location
+    config_path = os.path.join(os.path.expanduser("~"), ".teleport.env")
+    
+    # Write config
+    with open(config_path, "w") as f:
+        f.write(f"TELEGRAM_BOT_TOKEN={bot_token}\n")
+        f.write(f"TELEGRAM_CHAT_ID={chat_id}\n")
+    
+    console.print(f"\n[bold green]Configuration saved to {config_path}[/bold green]")
+    console.print("\nYou can now use TelePort commands like:")
+    console.print("  teleport send-text \"Hello World\"")
+
 if __name__ == "__main__":
     app()
