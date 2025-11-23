@@ -1,62 +1,66 @@
-# TelePort 🚀
+# TelePort
 
-**TelePort** is a lightweight, powerful CLI tool for interacting with Telegram. Send messages, images, and files directly from your terminal, or listen for incoming media with ease.
+A command-line tool for sending and receiving Telegram messages.
 
 ## Features
 
-- 📨 **Send Text**: Instantly send messages to your configured chat.
-- 📸 **Send Images**: Share photos with optional captions.
-- 📁 **Send Files**: Transfer documents while preserving their original format.
-- 👂 **Listen Mode**: Real-time monitoring for incoming messages and media downloads.
+- Send text messages
+- Send images with optional captions
+- Send files (documents are sent uncompressed, preserving original format)
+- Listen for incoming messages and automatically download media
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/aadityapanigrahi/TelePort.git
-    cd TelePort
-    ```
+Clone the repository:
+```bash
+git clone https://github.com/aadityapanigrahi/TelePort.git
+cd TelePort
+```
 
-2.  **Install the tool:**
-    This will install dependencies and register the `teleport` command globally (or in your virtual environment).
-    ```bash
-    pip install .
-    ```
-    *For development (editable mode):*
-    ```bash
-    pip install -e .
-    ```
+Install with pip:
+```bash
+pip install .
+```
 
-3.  **Configure credentials:**
-    Copy `.env.example` to `.env` and add your Telegram Bot Token and Chat ID.
-    ```bash
-    cp .env.example .env
-    # Edit .env with your credentials
-    ```
+For development, install in editable mode:
+```bash
+pip install -e .
+```
+
+## Configuration
+
+Create a `.env` file with your Telegram credentials:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add:
+- `TELEGRAM_BOT_TOKEN`: Your bot token from BotFather
+- `TELEGRAM_CHAT_ID`: The chat ID where messages will be sent
 
 ## Usage
 
-Once installed, you can use the `teleport` command from anywhere in your terminal.
-
-**Send a message:**
+Send a text message:
 ```bash
-teleport send-text "Hello from TelePort!"
+teleport send-text "Hello"
 ```
 
-**Send an image:**
+Send an image:
 ```bash
-teleport send-image path/to/image.jpg --caption "Cool photo"
+teleport send-image photo.jpg --caption "My photo"
 ```
 
-**Send a file:**
+Send a file:
 ```bash
-teleport send-file path/to/document.pdf
+teleport send-file document.pdf
 ```
 
-**Listen for messages:**
+Listen for incoming messages:
 ```bash
 teleport listen
 ```
+
+Messages and media are logged to `conversation/messages.log` and `transaction_files/` respectively.
 
 ## License
 
