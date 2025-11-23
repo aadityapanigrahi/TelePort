@@ -27,11 +27,16 @@ def log_message(direction: str, user_name: str, text: str, message_type: str = "
 
 def get_credentials():
     """Retrieve credentials from environment variables."""
+    # Try loading from current directory first, then home directory
+    load_dotenv(os.path.join(os.getcwd(), ".env"))
+    load_dotenv(os.path.join(os.path.expanduser("~"), ".teleport.env"))
+    
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not token:
-        console.print("[bold red]Error:[/bold red] TELEGRAM_BOT_TOKEN not found in .env file.")
+        console.print("[bold red]Error:[/bold red] TELEGRAM_BOT_TOKEN not found.")
+        console.print("Please create a .env file in the current directory or ~/.teleport.env with your credentials.")
         raise typer.Exit(code=1)
         
     return token, chat_id
