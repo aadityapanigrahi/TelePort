@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -109,6 +110,7 @@ class Session:
         self.task_start_time: Optional[float] = None
         self.task_timeout: int = 300   # 5 mins default — overridable with timeout:Nd
         self.task_instruction: str = ""
+        self.cancel_event: Optional[threading.Event] = None
         # Temp storage for directory options shown in the picker
         self._dir_options: list[Path] = []
 
@@ -432,8 +434,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     session = get_session(update.effective_chat.id)
 
     if session.running_task and not session.running_task.done():
+        if session.cancel_event:
+            session.cancel_event.set()
         session.running_task.cancel()
-        await update.message.reply_text("🛑 Task cancellation requested. It may take a moment to stop.")
+        await update.message.reply_text("🛑 Task cancellation requested. Stopping background process...")
     else:
         await update.message.reply_text("No task is currently running.")
 
@@ -857,10 +861,12 @@ async def _dispatch(update: Update, instruction: str, attached: list[Path]) -> N
 
     # Store live task metadata on session (used by heartbeat + /status)
     live_buf = LiveOutput()
+    cancel_event = threading.Event()
     session.live_output      = live_buf
     session.task_start_time  = time.monotonic()
     session.task_timeout     = timeout
     session.task_instruction = instruction[:120]
+    session.cancel_event     = cancel_event
 
     provider_label = provider or "auto"
     ack_text = (
@@ -889,6 +895,7 @@ async def _dispatch(update: Update, instruction: str, attached: list[Path]) -> N
             timeout=timeout,
             preferred_provider=provider,
             live_output=live_buf,
+            cancel_event=cancel_event,
         ),
     )
     session.running_task = task_future
@@ -924,6 +931,7 @@ async def _dispatch(update: Update, instruction: str, attached: list[Path]) -> N
         session.task_ack_msg_id = None
         session.task_start_time = None
         session.live_output     = None
+        session.cancel_event    = None
 
     try:
         await bot.delete_message(chat_id=chat_id, message_id=ack.message_id)

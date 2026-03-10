@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+import threading
 import uuid
 import subprocess
 from datetime import datetime
@@ -165,6 +166,7 @@ def run_task(
     timeout: int = 300,
     preferred_provider: Optional[str] = None,
     live_output: LiveOutput = None,   # shared buffer for live heartbeat streaming
+    cancel_event: "threading.Event | None" = None,
 ) -> dict:
     """
     Execute a task.
@@ -258,6 +260,7 @@ def run_task(
         preferred=preferred_provider,
         env=env,
         live_output=live_output,
+        cancel_event=cancel_event,
     )
 
     total_elapsed = round(time.monotonic() - task_start, 1)

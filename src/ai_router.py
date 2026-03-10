@@ -149,6 +149,7 @@ def run_provider(
     timeout: int,
     env: dict = None,
     live_output: "LiveOutput | None" = None,
+    cancel_event: "threading.Event | None" = None,
 ) -> dict:
     """
     Run a single AI provider and return a structured result dict.
@@ -192,19 +193,36 @@ def run_provider(
         t_stderr.start()
 
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            elapsed = round(time.monotonic() - t0, 1)
-            log.warning("%s: timed out after %ds", name, timeout)
-            return {
-                "provider": name,
-                "output": f"[{name}] Timed out after {timeout}s.",
-                "exit_code": -1,
-                "error_category": ERR_TIMEOUT,
-                "elapsed_seconds": elapsed,
-            }
+            # Check for cancellation every 0.1s instead of a single blocking wait
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    proc.kill()
+                    proc.wait()
+                    elapsed = round(time.monotonic() - t0, 1)
+                    log.info("%s: task explicitly cancelled by user", name)
+                    return {
+                        "provider": name,
+                        "output": f"[{name}] Task cancelled by user.",
+                        "exit_code": -1,
+                        "error_category": ERR_CRASH,
+                        "elapsed_seconds": elapsed,
+                    }
+                try:
+                    proc.wait(timeout=0.1)
+                    break  # process finished
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() - t0 > timeout:
+                        proc.kill()
+                        proc.wait()
+                        elapsed = round(time.monotonic() - t0, 1)
+                        log.warning("%s: timed out after %ds", name, timeout)
+                        return {
+                            "provider": name,
+                            "output": f"[{name}] Timed out after {timeout}s.",
+                            "exit_code": -1,
+                            "error_category": ERR_TIMEOUT,
+                            "elapsed_seconds": elapsed,
+                        }
         finally:
             t_stdout.join(timeout=5)
             t_stderr.join(timeout=5)
@@ -277,6 +295,7 @@ def run_with_fallback(
     preferred: Optional[str] = None,
     env: dict = None,
     live_output: "LiveOutput | None" = None,
+    cancel_event: "threading.Event | None" = None,
 ) -> dict:
     """
     Try each provider in priority order, falling back on rate limits.
@@ -293,7 +312,10 @@ def run_with_fallback(
     fallback_log = []
 
     for provider in providers:
-        result = run_provider(provider, prompt, cwd, timeout, env=env, live_output=live_output)
+        result = run_provider(
+            provider, prompt, cwd, timeout, env=env,
+            live_output=live_output, cancel_event=cancel_event
+        )
         fallback_log.append(result)
 
         # Only fall through on rate limits or missing binaries
