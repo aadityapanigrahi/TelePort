@@ -162,7 +162,7 @@ def run_task(
     attached_files: list[Path] = None,
     session_dir: Optional[Path] = None,
     yolo: bool = False,
-    timeout: int = 600,
+    timeout: int = 300,
     preferred_provider: Optional[str] = None,
     live_output: LiveOutput = None,   # shared buffer for live heartbeat streaming
 ) -> dict:

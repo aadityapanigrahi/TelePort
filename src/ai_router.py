@@ -273,7 +273,7 @@ def run_provider(
 def run_with_fallback(
     prompt: str,
     cwd: str,
-    timeout: int = 600,
+    timeout: int = 300,
     preferred: Optional[str] = None,
     env: dict = None,
     live_output: "LiveOutput | None" = None,

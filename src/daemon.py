@@ -107,7 +107,7 @@ class Session:
         # Live task state
         self.live_output: Optional[LiveOutput] = None
         self.task_start_time: Optional[float] = None
-        self.task_timeout: int = 7 * 86400   # 7 days default — overridable with timeout:Nd
+        self.task_timeout: int = 300   # 5 mins default — overridable with timeout:Nd
         self.task_instruction: str = ""
         # Temp storage for directory options shown in the picker
         self._dir_options: list[Path] = []
@@ -709,12 +709,12 @@ def _tqdm_bar(elapsed: int, timeout: int, width: int = 20) -> str:
     return "[" + "█" * filled + "░" * (width - filled) + f"] {elapsed}s/{timeout}s"
 
 
-def _parse_timeout(text: str, default: int = 7 * 86400) -> tuple[str, int]:
+def _parse_timeout(text: str, default: int = 300) -> tuple[str, int]:
     """
     Extract a timeout override from message text.
     Supported formats: timeout:300  timeout:10m  timeout:12h  timeout:2d
     Returns (cleaned_text, timeout_seconds).
-    Default is 7 days so long-running jobs never get killed.
+    Default is 5 minutes unless overridden.
     """
     import re as _re
     m = _re.search(r"\btimeout:(\d+)([smhd]?)\b", text, _re.IGNORECASE)
