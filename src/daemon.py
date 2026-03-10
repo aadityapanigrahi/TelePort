@@ -29,6 +29,7 @@ Commands
 import asyncio
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -352,6 +353,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/clearchat – delete TelePort's recent messages from this chat\n"
         "/help      – this message\n\n"
         "Prefix with `@claude`, `@codex`, or `@gemini` to override for one task.\n"
+        "Append `timeout:12h`, `timeout:90m` or `timeout:2d` to override timeout.\n"
         "Append *yolo* to allow system-wide commands.",
         parse_mode=ParseMode.MARKDOWN,
     )
