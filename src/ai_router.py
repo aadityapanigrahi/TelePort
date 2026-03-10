@@ -58,7 +58,7 @@ PROVIDERS = [
     },
     {
         "name": "codex",
-        "cmd": [CODEX_BIN, "exec", None, "--full-auto"],
+        "cmd": [CODEX_BIN, "exec", None, "--full-auto", "--skip-git-repo-check"],
         "prompt_index": 2,
     },
     {
