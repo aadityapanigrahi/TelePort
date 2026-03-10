@@ -102,6 +102,7 @@ class Session:
         self.preferred_provider: Optional[str] = None
         self.running_task: Optional[asyncio.Future] = None
         self.task_ack_msg_id: Optional[int] = None
+        self.bot_message_ids: list[int] = []   # track our own messages for /clearchat
         # Temp storage for directory options shown in the picker
         self._dir_options: list[Path] = []
 
@@ -139,6 +140,7 @@ async def _safe_send(
     parse_mode=ParseMode.MARKDOWN,
     reply_markup=None,
     retries: int = 2,
+    track_chat_id: Optional[int] = None,   # if set, track this message for /clearchat
 ) -> Optional[int]:
     """Send a message with retry and automatic Markdown fallback."""
     for attempt in range(retries + 1):
@@ -149,10 +151,12 @@ async def _safe_send(
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
             )
+            if track_chat_id is not None:
+                session = get_session(track_chat_id)
+                session.bot_message_ids.append(msg.message_id)
             return msg.message_id
         except BadRequest as e:
             if "can't parse" in str(e).lower() and parse_mode == ParseMode.MARKDOWN:
-                # Markdown failed — retry without formatting
                 parse_mode = None
                 continue
             log.warning("BadRequest sending message: %s", e)
@@ -335,12 +339,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorised(update):
         return
     await update.message.reply_text(
-        "/start  – reset session & pick working directory\n"
-        "/status – show active directory + AI provider\n"
+        "/start     – reset session & pick working directory\n"
+        "/status    – show active directory + AI provider\n"
         "/use claude|codex|gemini|auto – switch provider\n"
-        "/cancel – cancel the currently running task\n"
-        "/logs   – view recent task log entries\n"
-        "/help   – this message\n\n"
+        "/cancel    – cancel the currently running task\n"
+        "/logs      – view recent task log entries\n"
+        "/clearchat – delete TelePort's recent messages from this chat\n"
+        "/help      – this message\n\n"
         "Prefix with `@claude`, `@codex`, or `@gemini` to override for one task.\n"
         "Append *yolo* to allow system-wide commands.",
         parse_mode=ParseMode.MARKDOWN,
@@ -435,6 +440,65 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception as e:
         await update.message.reply_text(f"Could not read logs: {e}")
+
+
+async def cmd_clearchat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    count: int = 50,
+) -> None:
+    """
+    Delete the bot's own recent messages from this chat.
+    Telegram only allows bots to delete their own messages, so we track
+    every message TelePort sends and bulk-delete them here.
+    Pass a number to limit: /clearchat 20
+    """
+    if not _authorised(update):
+        return
+
+    chat_id = update.effective_chat.id
+    session = get_session(chat_id)
+    bot     = update.get_bot()
+
+    # Also allow /clearchat <N> to limit how many
+    args = (update.message.text or "").split()
+    try:
+        limit = int(args[1]) if len(args) > 1 else count
+    except ValueError:
+        limit = count
+
+    ids_to_delete = session.bot_message_ids[-limit:]
+
+    if not ids_to_delete:
+        await update.message.reply_text("Nothing to clear — no tracked messages yet.")
+        return
+
+    deleted = 0
+    failed  = 0
+    for msg_id in ids_to_delete:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            deleted += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)   # stay under rate limits
+
+    # Clear tracked list
+    session.bot_message_ids.clear()
+
+    # Also delete the /clearchat command message itself
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if failed == 0:
+        confirm = await bot.send_message(chat_id=chat_id, text=f"🧹 Cleared {deleted} message(s).")
+    else:
+        confirm = await bot.send_message(chat_id=chat_id, text=f"🧹 Cleared {deleted} message(s) ({failed} couldn't be deleted — may be too old).")
+
+    # Track the confirm message so it can be cleared next time
+    session.bot_message_ids.append(confirm.message_id)
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +618,7 @@ async def _send_result(bot: Bot, chat_id: int, result: dict) -> None:
     session.last_provider = result["provider"]
 
     report = _format_status_report(result)
-    await _safe_send(bot, chat_id, report)
+    await _safe_send(bot, chat_id, report, track_chat_id=chat_id)
 
     # Send generated files
     for path in result["files"][:20]:
@@ -839,12 +903,13 @@ def main() -> None:
         .build()
     )
 
-    app.add_handler(CommandHandler("start",  cmd_start))
-    app.add_handler(CommandHandler("help",   cmd_help))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("use",    cmd_use))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(CommandHandler("logs",   cmd_logs))
+    app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("help",      cmd_help))
+    app.add_handler(CommandHandler("status",    cmd_status))
+    app.add_handler(CommandHandler("use",       cmd_use))
+    app.add_handler(CommandHandler("cancel",    cmd_cancel))
+    app.add_handler(CommandHandler("logs",      cmd_logs))
+    app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
