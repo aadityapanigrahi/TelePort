@@ -14,6 +14,12 @@ import re
 import subprocess
 import time
 from pathlib import Path
+
+_ANSI_ESC = re.compile(r"\x1b\[[0-9;]*[mGKHF]|\x1b\][^\x07]*\x07|\r")
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes and carriage returns."""
+    return _ANSI_ESC.sub("", text)
 from typing import Optional
 
 log = logging.getLogger("teleport.ai_router")
@@ -125,9 +131,18 @@ def run_provider(
             env=run_env,
         )
         elapsed = round(time.monotonic() - t0, 1)
-        output = result.stdout
-        if result.stderr:
-            output += "\n" + result.stderr
+        stdout = _strip_ansi(result.stdout or "")
+        stderr = _strip_ansi(result.stderr or "")
+
+        # Codex (and other providers) dump their agent loop / progress to
+        # stderr.  We do NOT want that flooding the user's Telegram chat.
+        # Only fall back to stderr if stdout produced nothing useful.
+        if stdout.strip():
+            output = stdout
+        elif stderr.strip():
+            output = stderr
+        else:
+            output = ""
 
         if is_rate_limited(output):
             log.info("%s: rate-limited (%.1fs)", name, elapsed)
