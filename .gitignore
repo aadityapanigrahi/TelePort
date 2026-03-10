@@ -23,11 +23,13 @@ coverage.xml
 dist/
 build/
 *.egg-info/
+*.egg
 
 # Environments
 .env
 .env.local
 .env.*.local
+.teleport.env
 
 # IDEs
 .vscode/
@@ -40,3 +42,5 @@ Thumbs.db
 # Project Specific
 conversation/
 transaction_files/
+workspace/
+

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "teleport": {
+      "command": "python",
+      "args": ["/path/to/TelePort/src/mcp_server.py"],
+      "env": {}
+    }
+  }
+}

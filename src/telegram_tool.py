@@ -10,6 +10,13 @@ from rich.console import Console
 # Load environment variables from .env file
 load_dotenv()
 
+__version__ = "0.2.0"
+
+def _version_callback(value: bool):
+    if value:
+        console.print(f"TelePort v{__version__}")
+        raise typer.Exit()
+
 app = typer.Typer()
 console = Console()
 
@@ -55,6 +62,15 @@ async def send_text_async(text: str):
     except Exception as e:
         console.print(f"[bold red]Failed to send message:[/bold red] {e}")
         raise typer.Exit(code=1)
+
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", "-v", callback=_version_callback, is_eager=True, help="Show version."),
+):
+    if ctx.invoked_subcommand is None and not version:
+        console.print(f"TelePort v{__version__} — use --help for commands.")
+
 
 @app.command()
 def send_text(message: str):
@@ -165,6 +181,32 @@ def listen(output_dir: str = typer.Option("transaction_files", help="Directory t
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+@app.command()
+def status():
+    """Show current configuration status."""
+    console.print(f"[bold blue]TelePort v{__version__}[/bold blue]\n")
+
+    # Check config files
+    home_env = os.path.join(os.path.expanduser("~"), ".teleport.env")
+    local_env = os.path.join(os.getcwd(), ".env")
+
+    console.print("[bold]Config files:[/bold]")
+    console.print(f"  {'✓' if os.path.exists(home_env) else '✗'} {home_env}")
+    console.print(f"  {'✓' if os.path.exists(local_env) else '✗'} {local_env}")
+
+    # Check credentials
+    token, chat_id = None, None
+    try:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    except Exception:
+        pass
+
+    console.print("\n[bold]Credentials:[/bold]")
+    console.print(f"  Bot Token: {'✓ set' if token else '✗ not set'}")
+    console.print(f"  Chat ID:   {'✓ set (' + chat_id[:8] + '…)' if chat_id else '✗ not set'}")
+
 
 @app.command()
 def config():
