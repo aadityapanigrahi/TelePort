@@ -106,7 +106,7 @@ class Session:
         # Live task state
         self.live_output: Optional[LiveOutput] = None
         self.task_start_time: Optional[float] = None
-        self.task_timeout: int = 600
+        self.task_timeout: int = 7 * 86400   # 7 days default — overridable with timeout:Nd
         self.task_instruction: str = ""
         # Temp storage for directory options shown in the picker
         self._dir_options: list[Path] = []
@@ -400,7 +400,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         filled   = min(20, int(20 * elapsed / timeout))
         bar      = "█" * filled + "░" * (20 - filled)
         pct      = min(100, int(100 * elapsed / timeout))
-        task_line = f"🔄 Running for *{elapsed}s*  [{bar}] {pct}%"
+        task_line = f"🔄 Running for *{_fmt_duration(elapsed)}*  [{bar}] {pct}%"
+        # ETA from tqdm
+        eta_s = _parse_tqdm_eta(session.live_output)
+        if eta_s > 0:
+            task_line += f"  ·  ETA ~*{_fmt_duration(eta_s)}*"
         if session.task_instruction:
             task_line += f"\n  📝 _{session.task_instruction[:80]}_"
         if session.live_output and len(session.live_output) > 0:
@@ -703,13 +707,79 @@ def _tqdm_bar(elapsed: int, timeout: int, width: int = 20) -> str:
     return "[" + "█" * filled + "░" * (width - filled) + f"] {elapsed}s/{timeout}s"
 
 
-def _parse_timeout(text: str, default: int = 600) -> tuple[str, int]:
-    """Extract 'timeout:N' from message text. Returns (cleaned_text, timeout_seconds)."""
+def _parse_timeout(text: str, default: int = 7 * 86400) -> tuple[str, int]:
+    """
+    Extract a timeout override from message text.
+    Supported formats: timeout:300  timeout:10m  timeout:12h  timeout:2d
+    Returns (cleaned_text, timeout_seconds).
+    Default is 7 days so long-running jobs never get killed.
+    """
     import re as _re
-    m = _re.search(r"\btimeout:(\d+)\b", text, _re.IGNORECASE)
+    m = _re.search(r"\btimeout:(\d+)([smhd]?)\b", text, _re.IGNORECASE)
     if m:
-        return _re.sub(r"\btimeout:\d+\b", "", text, flags=_re.IGNORECASE).strip(), int(m.group(1))
+        val, unit = int(m.group(1)), m.group(2).lower()
+        multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, '': 1}
+        seconds = val * multipliers.get(unit, 1)
+        cleaned = _re.sub(r"\btimeout:\d+[smhd]?\b", "", text, flags=_re.IGNORECASE).strip()
+        return cleaned, seconds
     return text, default
+
+
+_TQDM_ETA_RE = re.compile(
+    r"""\[\s*
+        (?:[\d:]+)           # elapsed  e.g. 01:23
+        <
+        (\d{1,2}:\d{2}(?::\d{2})?)   # remaining  e.g. 12:34:56 or 12:34
+        [,\s>]
+    """,
+    re.VERBOSE,
+)
+
+
+def _parse_tqdm_eta(live_output) -> int:
+    """
+    Scan the last 20 lines of live_output for tqdm-style ETA strings
+    (e.g. '[01:23<12:34:56, 2.3it/s]') and return the best ETA in seconds.
+    Returns 0 if no ETA is found.
+    """
+    if not live_output:
+        return 0
+    tail = live_output.tail(20)
+    best_eta = 0
+    for m in _TQDM_ETA_RE.finditer(tail):
+        parts = m.group(1).split(":")
+        parts = [int(p) for p in parts]
+        if len(parts) == 3:
+            eta_s = parts[0] * 3600 + parts[1] * 60 + parts[2]
+        elif len(parts) == 2:
+            eta_s = parts[0] * 60 + parts[1]
+        else:
+            continue
+        if eta_s > best_eta:
+            best_eta = eta_s
+    return best_eta
+
+
+def _next_heartbeat_interval(eta_seconds: int) -> int:
+    """
+    Choose the next heartbeat sleep duration based on tqdm ETA.
+    The goal is ~3-5 check-ins regardless of total job length.
+    """
+    if eta_seconds <= 0:         return 30          # unknown — use short default
+    if eta_seconds < 5 * 60:    return 30          # < 5 min  → every 30s
+    if eta_seconds < 30 * 60:   return 5 * 60      # < 30 min → every 5 min
+    if eta_seconds < 2 * 3600:  return 15 * 60     # < 2 h    → every 15 min
+    if eta_seconds < 12 * 3600: return 30 * 60     # < 12 h   → every 30 min
+    if eta_seconds < 48 * 3600: return 2 * 3600    # < 2 days → every 2 h
+    return 6 * 3600                                # ≥ 2 days → every 6 h
+
+
+def _fmt_duration(seconds: int) -> str:
+    """Human-readable duration string."""
+    if seconds < 60:   return f"{seconds}s"
+    if seconds < 3600: return f"{seconds // 60}m {seconds % 60}s"
+    h, rem = divmod(seconds, 3600)
+    return f"{h}h {rem // 60}m"
 
 
 async def _heartbeat(
@@ -720,29 +790,49 @@ async def _heartbeat(
     task_future,
 ) -> None:
     """
-    Runs concurrently with the task. Edits the ack message every N seconds
-    showing elapsed time, tqdm-style bar, and last few lines of output.
-    Interval: 30s for the first 5 minutes, then 60s after that.
-    The bot stays fully responsive to other commands throughout.
+    Runs concurrently with the task. Edits the ack message at adaptive intervals.
+
+    Interval logic (driven by tqdm ETA from live output):
+      ETA unknown / <5m  → 30s
+      ETA 5-30m          → 5 min
+      ETA 30m-2h         → 15 min
+      ETA 2h-12h         → 30 min
+      ETA 12h-2d         → 2 h
+      ETA ≥ 2d           → 6 h
+
+    This means a 2-day job will only ping you ~8 times total, not every 30s.
+    The bot stays fully responsive to all commands throughout.
     """
-    heartbeat_n = 0
+    # Start with a short initial interval to show the task kicked off
+    interval = 30
+
     while not task_future.done():
-        interval = 30 if heartbeat_n < 10 else 60
         await asyncio.sleep(interval)
         if task_future.done():
             break
-        heartbeat_n += 1
         try:
-            elapsed  = int(time.monotonic() - session.task_start_time)
-            bar      = _tqdm_bar(elapsed, session.task_timeout)
-            provider = session.preferred_provider or "auto"
-            lines    = [f"⏳ *Working…* {bar}",
-                        f"  Provider: `{provider}`  ·  Dir: `{session.dir}`"]
+            elapsed   = int(time.monotonic() - session.task_start_time)
+            eta_s     = _parse_tqdm_eta(session.live_output)
+            interval  = _next_heartbeat_interval(eta_s)
+            provider  = session.preferred_provider or "auto"
+
+            bar   = _tqdm_bar(elapsed, session.task_timeout)
+            lines = [f"⏳ *Working…* {bar}"]
+
+            if eta_s > 0:
+                eta_str = _fmt_duration(eta_s)
+                next_check = _fmt_duration(interval)
+                lines.append(f"  ⏱ ETA: ~*{eta_str}*  (next update in {next_check})")
+
+            lines.append(f"  Provider: `{provider}`  ·  Dir: `{session.dir}`")
+
             if session.task_instruction:
                 lines.append(f"  📝 _{session.task_instruction[:80]}_")
+
             if session.live_output and len(session.live_output) > 0:
                 tail = session.live_output.tail(4)
                 lines.append(f"\n💬 *Recent output:*\n```\n{tail[:400]}\n```")
+
             lines.append("\n_/status for details · /cancel to stop_")
             await _safe_edit(bot, chat_id, ack_msg_id, "\n".join(lines))
         except asyncio.CancelledError:
