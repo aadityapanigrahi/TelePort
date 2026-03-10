@@ -12,15 +12,55 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 _ANSI_ESC = re.compile(r"\x1b\[[0-9;]*[mGKHF]|\x1b\][^\x07]*\x07|\r")
 
 def _strip_ansi(text: str) -> str:
     """Remove ANSI escape codes and carriage returns."""
     return _ANSI_ESC.sub("", text)
-from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Live output buffer — shared between the subprocess thread and the daemon
+# ---------------------------------------------------------------------------
+
+class LiveOutput:
+    """
+    Thread-safe rolling buffer of output lines from a running provider.
+    Written to by the subprocess reader thread; read by the daemon's
+    heartbeat coroutine and /status handler.
+    """
+
+    def __init__(self, max_lines: int = 200):
+        self._lines: list[str] = []
+        self._lock  = threading.Lock()
+        self.max_lines = max_lines
+
+    def append(self, line: str) -> None:
+        line = _strip_ansi(line).rstrip()
+        if not line:
+            return
+        with self._lock:
+            self._lines.append(line)
+            if len(self._lines) > self.max_lines:
+                self._lines = self._lines[-self.max_lines:]
+
+    def tail(self, n: int = 10) -> str:
+        """Return the last n lines as a single string."""
+        with self._lock:
+            return "\n".join(self._lines[-n:])
+
+    def full(self) -> str:
+        with self._lock:
+            return "\n".join(self._lines)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._lines)
 
 log = logging.getLogger("teleport.ai_router")
 
@@ -108,9 +148,12 @@ def run_provider(
     cwd: str,
     timeout: int,
     env: dict = None,
+    live_output: "LiveOutput | None" = None,
 ) -> dict:
     """
     Run a single AI provider and return a structured result dict.
+    If `live_output` is provided, stdout lines are streamed into it in real-time
+    so the daemon can show heartbeat progress while the task runs.
 
     Keys: output, exit_code, error_category, elapsed_seconds, provider
     """
@@ -122,17 +165,53 @@ def run_provider(
     t0 = time.monotonic()
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=cwd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=run_env,
         )
+
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+
+        def _read_stream(stream, sink: list, is_stdout: bool):
+            for raw in stream:
+                clean = _strip_ansi(raw.rstrip())
+                if not clean:
+                    continue
+                sink.append(clean)
+                if is_stdout and live_output is not None:
+                    live_output.append(clean)
+
+        t_stdout = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_lines, True),  daemon=True)
+        t_stderr = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_lines, False), daemon=True)
+        t_stdout.start()
+        t_stderr.start()
+
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            elapsed = round(time.monotonic() - t0, 1)
+            log.warning("%s: timed out after %ds", name, timeout)
+            return {
+                "provider": name,
+                "output": f"[{name}] Timed out after {timeout}s.",
+                "exit_code": -1,
+                "error_category": ERR_TIMEOUT,
+                "elapsed_seconds": elapsed,
+            }
+        finally:
+            t_stdout.join(timeout=5)
+            t_stderr.join(timeout=5)
+
         elapsed = round(time.monotonic() - t0, 1)
-        stdout = _strip_ansi(result.stdout or "")
-        stderr = _strip_ansi(result.stderr or "")
+        stdout = "\n".join(stdout_lines)
+        stderr = "\n".join(stderr_lines)
 
         # Codex (and other providers) dump their agent loop / progress to
         # stderr.  We do NOT want that flooding the user's Telegram chat.
@@ -149,31 +228,20 @@ def run_provider(
             return {
                 "provider": name,
                 "output": output,
-                "exit_code": result.returncode,
+                "exit_code": proc.returncode,
                 "error_category": ERR_RATE_LIMITED,
                 "elapsed_seconds": elapsed,
             }
 
-        category = ERR_NONE if result.returncode == 0 else ERR_CRASH
+        category = ERR_NONE if proc.returncode == 0 else ERR_CRASH
         if category == ERR_CRASH:
-            log.warning("%s: non-zero exit %d (%.1fs)", name, result.returncode, elapsed)
+            log.warning("%s: non-zero exit %d (%.1fs)", name, proc.returncode, elapsed)
 
         return {
             "provider": name,
             "output": output,
-            "exit_code": result.returncode,
+            "exit_code": proc.returncode,
             "error_category": category,
-            "elapsed_seconds": elapsed,
-        }
-
-    except subprocess.TimeoutExpired:
-        elapsed = round(time.monotonic() - t0, 1)
-        log.warning("%s: timed out after %ds", name, timeout)
-        return {
-            "provider": name,
-            "output": f"[{name}] Timed out after {timeout}s.",
-            "exit_code": -1,
-            "error_category": ERR_TIMEOUT,
             "elapsed_seconds": elapsed,
         }
     except FileNotFoundError:
@@ -205,9 +273,10 @@ def run_provider(
 def run_with_fallback(
     prompt: str,
     cwd: str,
-    timeout: int = 300,
+    timeout: int = 600,
     preferred: Optional[str] = None,
     env: dict = None,
+    live_output: "LiveOutput | None" = None,
 ) -> dict:
     """
     Try each provider in priority order, falling back on rate limits.
@@ -224,7 +293,7 @@ def run_with_fallback(
     fallback_log = []
 
     for provider in providers:
-        result = run_provider(provider, prompt, cwd, timeout, env=env)
+        result = run_provider(provider, prompt, cwd, timeout, env=env, live_output=live_output)
         fallback_log.append(result)
 
         # Only fall through on rate limits or missing binaries

@@ -52,7 +52,7 @@ from telegram.ext import (
 )
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ai_router import ERR_CRASH, ERR_NONE, ERR_RATE_LIMITED, ERR_TIMEOUT, ERR_NOT_FOUND, check_providers, check_providers_detailed
+from ai_router import ERR_CRASH, ERR_NONE, ERR_RATE_LIMITED, ERR_TIMEOUT, ERR_NOT_FOUND, LiveOutput, check_providers, check_providers_detailed
 from task_runner import IMAGE_EXTS, run_task
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,11 @@ class Session:
         self.running_task: Optional[asyncio.Future] = None
         self.task_ack_msg_id: Optional[int] = None
         self.bot_message_ids: list[int] = []   # track our own messages for /clearchat
+        # Live task state
+        self.live_output: Optional[LiveOutput] = None
+        self.task_start_time: Optional[float] = None
+        self.task_timeout: int = 600
+        self.task_instruction: str = ""
         # Temp storage for directory options shown in the picker
         self._dir_options: list[Path] = []
 
@@ -387,12 +392,27 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     dir_line  = f"`{session.dir}`" if session.dir else "_not set_"
     pref_line = f"`{session.preferred_provider}`" if session.preferred_provider else "_auto_"
     last_line = f"`{session.last_provider}`" if session.last_provider else "_none yet_"
-    task_line = "🔄 Running" if (session.running_task and not session.running_task.done()) else "💤 Idle"
+
+    # Live task progress
+    if session.running_task and not session.running_task.done() and session.task_start_time:
+        elapsed  = int(time.monotonic() - session.task_start_time)
+        timeout  = session.task_timeout
+        filled   = min(20, int(20 * elapsed / timeout))
+        bar      = "█" * filled + "░" * (20 - filled)
+        pct      = min(100, int(100 * elapsed / timeout))
+        task_line = f"🔄 Running for *{elapsed}s*  [{bar}] {pct}%"
+        if session.task_instruction:
+            task_line += f"\n  📝 _{session.task_instruction[:80]}_"
+        if session.live_output and len(session.live_output) > 0:
+            tail = session.live_output.tail(3)
+            task_line += f"\n  💬 Last output:\n```\n{tail[:300]}\n```"
+    else:
+        task_line = "💤 Idle"
 
     await update.message.reply_markdown(
         f"*Session directory:* {dir_line}\n"
         f"*Preferred provider:* {pref_line}\n"
-        f"*Last provider:* {last_line}\n"
+        f"*Last provider:* {last_line}\n\n"
         f"*Task status:* {task_line}\n\n"
         f"*AI providers:*\n{provider_lines}\n"
         f"*Fallback order:* claude → codex → gemini"
@@ -677,52 +697,123 @@ def _detect_provider_override(text: str) -> tuple[str, str | None]:
     return text, None
 
 
+def _tqdm_bar(elapsed: int, timeout: int, width: int = 20) -> str:
+    """Return a tqdm-style text progress bar."""
+    filled = min(width, int(width * elapsed / max(timeout, 1)))
+    return "[" + "█" * filled + "░" * (width - filled) + f"] {elapsed}s/{timeout}s"
+
+
+def _parse_timeout(text: str, default: int = 600) -> tuple[str, int]:
+    """Extract 'timeout:N' from message text. Returns (cleaned_text, timeout_seconds)."""
+    import re as _re
+    m = _re.search(r"\btimeout:(\d+)\b", text, _re.IGNORECASE)
+    if m:
+        return _re.sub(r"\btimeout:\d+\b", "", text, flags=_re.IGNORECASE).strip(), int(m.group(1))
+    return text, default
+
+
+async def _heartbeat(
+    bot,
+    chat_id: int,
+    ack_msg_id: int,
+    session,
+    task_future,
+) -> None:
+    """
+    Runs concurrently with the task. Edits the ack message every N seconds
+    showing elapsed time, tqdm-style bar, and last few lines of output.
+    Interval: 30s for the first 5 minutes, then 60s after that.
+    The bot stays fully responsive to other commands throughout.
+    """
+    heartbeat_n = 0
+    while not task_future.done():
+        interval = 30 if heartbeat_n < 10 else 60
+        await asyncio.sleep(interval)
+        if task_future.done():
+            break
+        heartbeat_n += 1
+        try:
+            elapsed  = int(time.monotonic() - session.task_start_time)
+            bar      = _tqdm_bar(elapsed, session.task_timeout)
+            provider = session.preferred_provider or "auto"
+            lines    = [f"⏳ *Working…* {bar}",
+                        f"  Provider: `{provider}`  ·  Dir: `{session.dir}`"]
+            if session.task_instruction:
+                lines.append(f"  📝 _{session.task_instruction[:80]}_")
+            if session.live_output and len(session.live_output) > 0:
+                tail = session.live_output.tail(4)
+                lines.append(f"\n💬 *Recent output:*\n```\n{tail[:400]}\n```")
+            lines.append("\n_/status for details · /cancel to stop_")
+            await _safe_edit(bot, chat_id, ack_msg_id, "\n".join(lines))
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.debug("Heartbeat edit failed: %s", e)
+
+
 async def _dispatch(update: Update, instruction: str, attached: list[Path]) -> None:
     bot     = update.get_bot()
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
 
-    # Per-message @provider override
+    # Per-message @provider and timeout overrides
     instruction, override = _detect_provider_override(instruction)
     provider = override or session.preferred_provider
+    instruction, timeout = _parse_timeout(instruction, default=session.task_timeout)
 
     yolo = "yolo" in instruction.lower()
 
+    # Store live task metadata on session (used by heartbeat + /status)
+    live_buf = LiveOutput()
+    session.live_output      = live_buf
+    session.task_start_time  = time.monotonic()
+    session.task_timeout     = timeout
+    session.task_instruction = instruction[:120]
+
     provider_label = provider or "auto"
     ack_text = (
-        f"⏳ Working…\n"
+        f"⏳ Working… {_tqdm_bar(0, timeout)}\n"
         f"  Provider: `{provider_label}`"
         + (" · 🚀 yolo" if yolo else "")
         + f"\n  Directory: `{session.dir}`"
+        + "\n_/status for live progress · /cancel to stop_"
     )
     ack = await update.message.reply_text(ack_text, parse_mode=ParseMode.MARKDOWN)
     session.task_ack_msg_id = ack.message_id
 
-    # Send typing indicator
     try:
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except Exception:
         pass
 
     loop = asyncio.get_event_loop()
+    task_future = loop.run_in_executor(
+        _executor,
+        lambda: run_task(
+            user_instruction=instruction,
+            attached_files=attached,
+            session_dir=session.dir,
+            yolo=yolo,
+            timeout=timeout,
+            preferred_provider=provider,
+            live_output=live_buf,
+        ),
+    )
+    session.running_task = task_future
+
+    # Heartbeat runs concurrently — the asyncio event loop is never blocked
+    heartbeat = asyncio.ensure_future(
+        _heartbeat(bot, chat_id, ack.message_id, session, task_future)
+    )
+
     try:
-        task_future = loop.run_in_executor(
-            _executor,
-            lambda: run_task(
-                user_instruction=instruction,
-                attached_files=attached,
-                session_dir=session.dir,
-                yolo=yolo,
-                timeout=300,
-                preferred_provider=provider,
-            ),
-        )
-        session.running_task = task_future
         result = await task_future
     except asyncio.CancelledError:
+        heartbeat.cancel()
         await _safe_edit(bot, chat_id, ack.message_id, "🛑 Task cancelled.")
         return
     except Exception as exc:
+        heartbeat.cancel()
         log.exception("Task failed")
         error_report = (
             f"❌ *Task Failed*\n\n"
@@ -736,8 +827,11 @@ async def _dispatch(update: Update, instruction: str, attached: list[Path]) -> N
         await _safe_edit(bot, chat_id, ack.message_id, error_report)
         return
     finally:
-        session.running_task = None
+        heartbeat.cancel()
+        session.running_task    = None
         session.task_ack_msg_id = None
+        session.task_start_time = None
+        session.live_output     = None
 
     try:
         await bot.delete_message(chat_id=chat_id, message_id=ack.message_id)
@@ -745,6 +839,13 @@ async def _dispatch(update: Update, instruction: str, attached: list[Path]) -> N
         pass
 
     await _send_result(bot, chat_id, result)
+
+# ---------------------------------------------------------------------------
+# Message handlers
+# ---------------------------------------------------------------------------
+
+
+
 
 
 # ---------------------------------------------------------------------------

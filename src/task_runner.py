@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ai_router import run_with_fallback
+from ai_router import LiveOutput, run_with_fallback
 
 log = logging.getLogger("teleport.task_runner")
 
@@ -118,6 +118,11 @@ def _build_prompt(
         "\nSave any plots or output files in the current working directory as PNG files "
         "so they can be sent back to the user."
     )
+    parts.append(
+        "\nIMPORTANT: For any loops or long-running operations, use tqdm progress bars "
+        "(e.g. `from tqdm import tqdm`) so the user can track progress. "
+        "Install it with `uv add tqdm` if not already installed."
+    )
 
     return "\n".join(parts)
 
@@ -157,8 +162,9 @@ def run_task(
     attached_files: list[Path] = None,
     session_dir: Optional[Path] = None,
     yolo: bool = False,
-    timeout: int = 300,
+    timeout: int = 600,
     preferred_provider: Optional[str] = None,
+    live_output: LiveOutput = None,   # shared buffer for live heartbeat streaming
 ) -> dict:
     """
     Execute a task.
@@ -242,12 +248,16 @@ def run_task(
 
     # ---- Run AI ----
     env = _build_env(session_dir)
+    # Create a live output buffer if the caller didn't supply one
+    if live_output is None:
+        live_output = LiveOutput()
     ai_result = run_with_fallback(
         prompt,
         cwd=str(work_dir),
         timeout=timeout,
         preferred=preferred_provider,
         env=env,
+        live_output=live_output,
     )
 
     total_elapsed = round(time.monotonic() - task_start, 1)
@@ -271,5 +281,6 @@ def run_task(
         "exit_code"      : ai_result["exit_code"],
         "error_category" : ai_result["error_category"],
         "fallback_log"   : ai_result.get("fallback_log", []),
+        "live_output"    : live_output,
     }
 
