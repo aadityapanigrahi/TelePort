@@ -915,7 +915,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE | filters.VIDEO_NOTE, handle_voice))
-    app.add_handler(MessageHandler(filters.STICKER | filters.VIDEO | filters.ANIMATION, handle_unsupported))
+    app.add_handler(MessageHandler(filters.Sticker.ALL | filters.VIDEO | filters.ANIMATION, handle_unsupported))
 
     console.print("[bold blue]Listening…[/bold blue]  (Ctrl+C to stop)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
